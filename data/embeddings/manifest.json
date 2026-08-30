@@ -1,0 +1,9 @@
+{
+  "model_id": "sentence-transformers/all-MiniLM-L6-v2",
+  "dimension": 384,
+  "chunk_count": 137,
+  "vector_count": 137,
+  "embedding_input": "chunk.text",
+  "vectors_path": "C:\\Users\\LENEVO\\Grow ChatBot\\data\\embeddings\\vectors.npy",
+  "records_path": "C:\\Users\\LENEVO\\Grow ChatBot\\data\\embeddings\\records.json"
+}

@@ -9,8 +9,6 @@ from __future__ import annotations
 import re
 from typing import Any
 
-import chromadb
-
 from config.corpus import ALLOWLIST_URLS
 from embedding.model import embed_texts
 from vectordb.paths import CHROMA_DIR, COLLECTION_NAME
@@ -88,6 +86,8 @@ def retrieve(question: str, k: int = DEFAULT_K) -> dict[str, Any]:
         return _result(question, [], matched)
 
     query_vectors = embed_texts([question])
+
+    import chromadb
 
     client = chromadb.PersistentClient(path=str(CHROMA_DIR))
     try:

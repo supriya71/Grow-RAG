@@ -1,0 +1,18 @@
+{
+  "collection_name": "groww_faq_chunks",
+  "model_id": "sentence-transformers/all-MiniLM-L6-v2",
+  "dimension": 384,
+  "chunk_count": 137,
+  "urls": [
+    "https://groww.in/mutual-funds/hdfc-balanced-advantage-fund-direct-growth",
+    "https://groww.in/mutual-funds/hdfc-elss-tax-saver-fund-direct-plan-growth",
+    "https://groww.in/mutual-funds/hdfc-equity-fund-direct-growth",
+    "https://groww.in/mutual-funds/hdfc-large-cap-fund-direct-growth",
+    "https://groww.in/mutual-funds/hdfc-small-cap-fund-direct-growth"
+  ],
+  "urls_within_allowlist": true,
+  "fetched_at_min": "2026-08-30T06:23:02+00:00",
+  "fetched_at_max": "2026-08-30T06:23:04+00:00",
+  "chroma_dir": "C:\\Users\\LENEVO\\Grow ChatBot\\data\\vectordb\\chroma",
+  "manifest_path": "C:\\Users\\LENEVO\\Grow ChatBot\\data\\vectordb\\manifest.json"
+}

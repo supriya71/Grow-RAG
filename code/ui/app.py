@@ -21,9 +21,10 @@ if str(CODE_ROOT) not in sys.path:
 import streamlit as st
 
 from config.corpus import CORPUS
-from retrieval.retriever import DEFAULT_K, retrieve
 
 FUND_NAME_BY_URL = {entry["url"]: entry["fund_name"] for entry in CORPUS}
+
+DEFAULT_K = 5
 
 EXAMPLES = [
     "What is the expense ratio of HDFC Large Cap Fund Direct Growth?",
@@ -128,6 +129,8 @@ if question:
         st.session_state.last_query = question
         try:
             with st.spinner("Embedding question and searching ChromaDB..."):
+                from retrieval.retriever import retrieve
+
                 st.session_state.evidence = retrieve(question, k=k)
         except RuntimeError as exc:
             st.error(str(exc))
