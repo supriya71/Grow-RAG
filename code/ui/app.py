@@ -19,6 +19,8 @@ if str(CODE_ROOT) not in sys.path:
 
 import streamlit as st
 
+from config.corpus import CORPUS
+
 DEFAULT_K = 5
 
 EXAMPLES = [
@@ -87,6 +89,10 @@ st.markdown(
     '<div class="disclaimer">Facts-only. No investment advice.</div>',
     unsafe_allow_html=True,
 )
+
+st.subheader("Covered funds (5)")
+for entry in CORPUS:
+    st.markdown(f"- **{entry['fund_name']}** — [Groww page]({entry['url']})")
 
 st.divider()
 st.caption("Try one of these:")

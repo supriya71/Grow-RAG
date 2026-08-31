@@ -55,26 +55,83 @@ _PII_RE = re.compile(
 class ApiKeyMissingError(RuntimeError):
     """Raised when Mistral generation is requested without an API key."""
 
+_FACT_LABELS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("Lock-in period", ("lock-in", "lockin", "lock in", "lock up")),
+    ("Expense ratio", ("expense ratio", "expense_ratio", "mer")),
+    ("Min. for SIP", ("sip", "systematic investment")),
+    ("Min. for 1st investment", ("minimum investment", "lumpsum", "lump sum", "min investment")),
+    ("Exit load", ("exit load", "exit_charge", "exit chrg")),
+    ("NAV", ("nav", "net asset value")),
+    ("Fund size (AUM)", ("aum", "assets under management", "fund size")),
+    ("Rating", ("rating", "riskometer", "risk factor", "star rating")),
+    ("Fund benchmark", ("benchmark", "index", "nifty")),
+    ("Date of Incorporation", ("launch date", "date of incorporation", "launched", "incorporation")),
+    ("Fund manager", ("fund manager", "manager")),
+    ("Stamp duty", ("stamp duty",)),
+    ("Tax implication", ("tax implication", "capital gains tax", "ltcg", "stcg")),
+)
+_VALUE_RE = re.compile(r"[%₹]|\d+(\.\d+)?(%|,| )|Nil|Very High|Moderately|Low|High|NIFTY|CRISIL", re.I)
 
-def _fallback_answer(res: dict) -> str:
-    """Return the clearest fact verbatim when no LLM call is possible."""
+
+def _topic_labels(question: str) -> tuple[str, ...]:
+    q = question.lower()
+    for label, keys in _FACT_LABELS:
+        if any(k in q for k in keys):
+            return (label,)
+    return ()
+
+
+def _fact_value(text: str, label: str) -> str | None:
+    """Return the short value line that follows a label in a chunk's text."""
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    for idx, line in enumerate(lines):
+        if line.lower() == label.lower() or line.startswith(label):
+            for nxt in lines[idx + 1: idx + 5]:
+                if 0 < len(nxt) <= 70 and _VALUE_RE.search(nxt):
+                    return nxt
+            # e.g. "NAV: 28 Aug '26" + value on following line handled above
+    return None
+
+
+_RISK_RE = re.compile(r"rated\s+(Very High|High|Moderately High|Moderately Low|Low|Very Low)\s+risk", re.I)
+_MANAGER_RE = re.compile(
+    r"([A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+){1,3})\s+is the (?:Current )?Fund Manager", re.I
+)
+
+
+def _fallback_answer(question: str, res: dict) -> str:
+    """Return the fact the question asks about, verbatim, when no LLM is possible."""
     chunks = res.get("chunks", [])
     if not chunks:
         return (
             "I don't have that information in the indexed Groww pages "
             "(no close match found)."
         )
-    _VALUE_RE = re.compile(r"[%₹]|\d+(\.\d+)?(%|,| )|Nil|Very High|Moderate")
-    for label in ("Lock-in period", "Expense ratio", "Min. for SIP", "Exit load",
-                  "Min. for 1st investment", "Fund size", "Rating"):
+    q = question.lower()
+    text = "\n".join(c["text"] for c in chunks)
+    if any(k in q for k in ("risk", "riskometer")):
+        m = _RISK_RE.search(text)
+        if m:
+            fund = chunks[0]["fund_name"]
+            return f"{fund}: Risk — {m.group(1).title()} risk"
+    if "fund manager" in q:
+        m = _MANAGER_RE.search(text)
+        if m:
+            fund = chunks[0]["fund_name"]
+            return f"{fund}: Fund manager — {m.group(1)}"
+    labels = _topic_labels(question)
+    for label in labels:
         for chunk in chunks:
-            lines = [ln.strip() for ln in chunk["text"].splitlines() if ln.strip()]
-            fund = chunk["fund_name"]
-            for idx, line in enumerate(lines):
-                if line.lower() == label.lower() or line.startswith(label):
-                    for nxt in lines[idx + 1: idx + 4]:
-                        if 0 < len(nxt) <= 60 and _VALUE_RE.search(nxt):
-                            return f"{fund}: {label} — {nxt}"
+            value = _fact_value(chunk["text"], label)
+            if value:
+                return f"{chunk['fund_name']}: {label} — {value}"
+    # No explicit topic (or topic value not found): return a relevant short pair.
+    for label in ("Lock-in period", "Expense ratio", "Exit load", "Min. for SIP",
+                  "Fund size (AUM)", "NAV", "Rating"):
+        for chunk in chunks:
+            value = _fact_value(chunk["text"], label)
+            if value:
+                return f"{chunk['fund_name']}: {label} — {value}"
     top = chunks[0]
     compact = " ".join(top["text"].split())
     return f"{top['fund_name']}: {compact[:240]}"
@@ -200,7 +257,7 @@ def _citation_label(url: str | None) -> str | None:
 def _synthesize(question: str, res: dict) -> str:
     key = os.environ.get("MISTRAL_API_KEY", "").strip()
     if not key:
-        return _fallback_answer(res)
+        return _fallback_answer(question, res)
 
     excerpts = []
     for i, chunk in enumerate(res.get("chunks", [])[:5], 1):
@@ -233,6 +290,6 @@ def _synthesize(question: str, res: dict) -> str:
         )
         resp.raise_for_status()
         answer = resp.json()["choices"][0]["message"]["content"].strip()
-        return answer or _fallback_answer(res)
+        return answer or _fallback_answer(question, res)
     except (requests.RequestException, KeyError, ValueError):
-        return _fallback_answer(res)
+        return _fallback_answer(question, res)
