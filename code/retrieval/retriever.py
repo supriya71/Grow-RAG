@@ -13,7 +13,7 @@ import numpy as np
 
 from config.corpus import ALLOWLIST_URLS
 from embedding.model import embed_texts
-from vectordb.paths import CHROMA_DIR, COLLECTION_NAME
+from vectordb.paths import COLLECTION_NAME
 
 DEFAULT_K = 5
 QUERY_POOL = 12
@@ -88,22 +88,7 @@ def retrieve(question: str, k: int = DEFAULT_K) -> dict[str, Any]:
         return _result(question, [], matched)
 
     query_vectors = embed_texts([question])
-
-    import chromadb
-
-    client = chromadb.PersistentClient(path=str(CHROMA_DIR))
-    try:
-        collection = client.get_collection(COLLECTION_NAME)
-    except Exception as exc:
-        # The on-disk Chroma index may be absent, stale, or platform-incompatible
-        # (HNSW .bin files are arch-specific, e.g. a Windows-built store pushed to
-        # a Linux cloud host). Rebuild from the portable records.json + vectors.npy.
-        if not _ensure_collection(client):
-            raise RuntimeError(
-                f"Collection '{COLLECTION_NAME}' missing and could not be rebuilt. "
-                f"Run Phase 4 first: py -3 code/vectordb/run.py"
-            ) from exc
-        collection = client.get_collection(COLLECTION_NAME)
+    collection = _collection()
 
     pool_size = max(QUERY_POOL, k)
     response = collection.query(
@@ -144,34 +129,41 @@ def retrieve(question: str, k: int = DEFAULT_K) -> dict[str, Any]:
     return _result(question, rows[:k], matched)
 
 
-def _ensure_collection(client) -> bool:
-    """Idempotently build the collection from portable records.json + vectors.npy.
+def _collection():
+    """Return a Chroma collection, built once in memory from portable data.
 
-    Returns True if the collection is queryable afterwards, False on failure.
-    Rebuild path is a stripped-down, correctness-focused version of
-    vectordb.store.build_vector_store (no strict allowlist re-verification here —
-    the source records were validated when persisted in Phase 4).
+    Uses Chroma's in-memory backend (no persistent / on-disk index). This is
+    deliberately cloud-safe: it avoids the arch-specific HNSW .bin files and the
+    requirement for a writable filesystem that Streamlit Community Cloud does not
+    reliably provide. 137 vectors fit trivially in RAM, so the whole collection
+    is reconstructed from records.json + vectors.npy on first use.
     """
+    global _COLLECTION
+    if _COLLECTION is not None:
+        return _COLLECTION
+
     import json
 
-    from embedding.model import EXPECTED_DIM
+    import chromadb
+
     from embedding.paths import RECORDS_PATH, VECTORS_PATH
-    from vectordb.paths import ensure_vectordb_dir
 
     try:
         if not VECTORS_PATH.is_file() or not RECORDS_PATH.is_file():
-            return False
+            raise RuntimeError(
+                f"Missing embeddings. Run Phase 3 first: py -3 code/embedding/run.py"
+            )
         vectors = np.load(VECTORS_PATH, allow_pickle=False)
         records = json.loads(RECORDS_PATH.read_text(encoding="utf-8"))
         if not np.isfinite(vectors).all() or vectors.ndim != 2:
-            return False
-    except (OSError, ValueError):
-        return False
+            raise RuntimeError("Embeddings are not finite 2-D arrays")
+    except (OSError, ValueError) as exc:
+        raise RuntimeError(
+            f"Could not load embeddings for retrieval: {exc}"
+        ) from exc
 
     try:
-        ensure_vectordb_dir()
-        if COLLECTION_NAME in {c.name for c in client.list_collections()}:
-            client.delete_collection(COLLECTION_NAME)
+        client = chromadb.EphemeralClient()
         collection = client.create_collection(
             name=COLLECTION_NAME,
             metadata={"hnsw:space": "cosine"},
@@ -187,16 +179,23 @@ def _ensure_collection(client) -> bool:
             for r in records
         ]
         if len(ids) == 0 or len(ids) != len(vectors):
-            return False
+            raise RuntimeError("Chunk/vector count mismatch")
         collection.add(
             ids=ids,
             embeddings=vectors.tolist(),
             documents=documents,
             metadatas=metadatas,
         )
-        return collection.count() == len(ids)
-    except Exception:
-        return False
+        if collection.count() != len(ids):
+            raise RuntimeError("Chroma upsert count mismatch")
+    except Exception as exc:
+        raise RuntimeError(f"Could not build in-memory collection: {exc}") from exc
+
+    _COLLECTION = collection
+    return _COLLECTION
+
+
+_COLLECTION = None
 
 
 def _prefer_fund(rows: list[dict[str, Any]], url: str) -> list[dict[str, Any]]:
