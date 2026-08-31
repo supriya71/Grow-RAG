@@ -9,6 +9,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
+import numpy as np
+
 from config.corpus import ALLOWLIST_URLS
 from embedding.model import embed_texts
 from vectordb.paths import CHROMA_DIR, COLLECTION_NAME
@@ -92,11 +94,16 @@ def retrieve(question: str, k: int = DEFAULT_K) -> dict[str, Any]:
     client = chromadb.PersistentClient(path=str(CHROMA_DIR))
     try:
         collection = client.get_collection(COLLECTION_NAME)
-    except ValueError as exc:
-        raise RuntimeError(
-            f"Collection '{COLLECTION_NAME}' missing. "
-            f"Run Phase 4 first: py -3 code/vectordb/run.py"
-        ) from exc
+    except Exception as exc:
+        # The on-disk Chroma index may be absent, stale, or platform-incompatible
+        # (HNSW .bin files are arch-specific, e.g. a Windows-built store pushed to
+        # a Linux cloud host). Rebuild from the portable records.json + vectors.npy.
+        if not _ensure_collection(client):
+            raise RuntimeError(
+                f"Collection '{COLLECTION_NAME}' missing and could not be rebuilt. "
+                f"Run Phase 4 first: py -3 code/vectordb/run.py"
+            ) from exc
+        collection = client.get_collection(COLLECTION_NAME)
 
     pool_size = max(QUERY_POOL, k)
     response = collection.query(
@@ -135,6 +142,61 @@ def retrieve(question: str, k: int = DEFAULT_K) -> dict[str, Any]:
         rows = _prefer_fund(rows, matched[0])
 
     return _result(question, rows[:k], matched)
+
+
+def _ensure_collection(client) -> bool:
+    """Idempotently build the collection from portable records.json + vectors.npy.
+
+    Returns True if the collection is queryable afterwards, False on failure.
+    Rebuild path is a stripped-down, correctness-focused version of
+    vectordb.store.build_vector_store (no strict allowlist re-verification here —
+    the source records were validated when persisted in Phase 4).
+    """
+    import json
+
+    from embedding.model import EXPECTED_DIM
+    from embedding.paths import RECORDS_PATH, VECTORS_PATH
+    from vectordb.paths import ensure_vectordb_dir
+
+    try:
+        if not VECTORS_PATH.is_file() or not RECORDS_PATH.is_file():
+            return False
+        vectors = np.load(VECTORS_PATH, allow_pickle=False)
+        records = json.loads(RECORDS_PATH.read_text(encoding="utf-8"))
+        if not np.isfinite(vectors).all() or vectors.ndim != 2:
+            return False
+    except (OSError, ValueError):
+        return False
+
+    try:
+        ensure_vectordb_dir()
+        if COLLECTION_NAME in {c.name for c in client.list_collections()}:
+            client.delete_collection(COLLECTION_NAME)
+        collection = client.create_collection(
+            name=COLLECTION_NAME,
+            metadata={"hnsw:space": "cosine"},
+        )
+        ids = [r["chunk_id"] for r in records]
+        documents = [r["text"] for r in records]
+        metadatas = [
+            {
+                "fund_name": r["fund_name"],
+                "url": r["url"],
+                "fetched_at": r["fetched_at"],
+            }
+            for r in records
+        ]
+        if len(ids) == 0 or len(ids) != len(vectors):
+            return False
+        collection.add(
+            ids=ids,
+            embeddings=vectors.tolist(),
+            documents=documents,
+            metadatas=metadatas,
+        )
+        return collection.count() == len(ids)
+    except Exception:
+        return False
 
 
 def _prefer_fund(rows: list[dict[str, Any]], url: str) -> list[dict[str, Any]]:

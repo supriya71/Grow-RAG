@@ -3,8 +3,9 @@
 Two backends, both loading the same all-MiniLM-L6-v2 weights -> 384-d
 L2-normalized vectors:
 
-- "sentence_transformers" (default): PyTorch via sentence-transformers, for dev.
-- "fastembed": ONNX via fastembed — no torch, for memory-constrained hosts.
+- "fastembed" (default): ONNX via fastembed — no torch, small footprint,
+  suitable for memory-constrained cloud hosts.
+- "sentence_transformers": PyTorch via sentence-transformers, for heavier dev.
 
 Pick with the EMBED_BACKEND environment variable. Importing this module never
 pulls in torch/onnx — backends are imported lazily on first use.
@@ -53,7 +54,10 @@ class _FastEmbedBackend:
 
 
 def _default_backend() -> str:
-    return os.getenv("EMBED_BACKEND", "sentence_transformers").strip().lower()
+    # Prefer fastembed (ONNX, ~50MB) on memory-constrained cloud hosts; it is
+    # the backend installed via requirements.txt. sentence_transformers (torch)
+    # is far heavier and only used locally if explicitly requested.
+    return os.getenv("EMBED_BACKEND", "fastembed").strip().lower()
 
 
 def get_model():

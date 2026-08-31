@@ -1,12 +1,16 @@
-# Pipeline artifacts (regenerate from ingest)
+# Raw HTML + parsed docs (large, re-downloadable) - keep .gitkeep only
 data/raw/*
 !data/raw/.gitkeep
+
+# Chunks (regenerate from raw)
 data/chunks/*
 !data/chunks/.gitkeep
-data/embeddings/*
-!data/embeddings/.gitkeep
-data/vectordb/*
-!data/vectordb/.gitkeep
+
+# Embeddings manifest (regenerable) - records.json + vectors.npy stay tracked
+data/embeddings/manifest.json
+
+# ChromaDB runtime dirs (rebuilt at startup from records.json + vectors.npy)
+data/vectordb/chroma/
 
 # Python
 __pycache__/
