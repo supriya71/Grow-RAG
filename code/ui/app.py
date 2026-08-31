@@ -1,12 +1,11 @@
-"""Retrieval explorer UI (Phase 5) — Streamlit single page.
+"""HDFC Fund FAQ — Streamlit single page (Phase 7: retrieval + generation).
 
 Run from the repo root:
-    py -3 -m streamlit run code/ui/app.py
+    <venv>/python -m streamlit run code/ui/app.py
 
-Wires the PRD UI shell (welcome, 3 examples, facts-only note, chat input,
-citation URL + last-updated) to `retrieval.retriever.retrieve`. Generation
-(Mistral) is not wired yet, so the page shows the chunks a generator would be
-allowed to cite, not a synthesized answer.
+Wires the PRD UI (welcome, 3 examples, facts-only disclaimer, chat input,
+answer + one citation link + last-updated) to a RAG loop: retrieve top-k
+chunks, then synthesize a grounded factual answer via generation.generator.
 """
 
 from __future__ import annotations
@@ -20,10 +19,6 @@ if str(CODE_ROOT) not in sys.path:
 
 import streamlit as st
 
-from config.corpus import CORPUS
-
-FUND_NAME_BY_URL = {entry["url"]: entry["fund_name"] for entry in CORPUS}
-
 DEFAULT_K = 5
 
 EXAMPLES = [
@@ -33,45 +28,44 @@ EXAMPLES = [
 ]
 
 
-def render_evidence(res: dict) -> None:
-    """Render retrieved evidence: metadata, citation, last-updated, top-k chunks."""
-    st.markdown(f"### {res['query']}")
+def run_flow(question: str) -> None:
+    from retrieval.retriever import retrieve
+    from generation.generator import generate
 
-    if res["empty"]:
-        st.error(
-            "No close match in the five indexed Groww pages (honest miss). "
-            "A generator must say it does not have this rather than invent it."
-        )
-        return
+    with st.spinner("Retrieving evidence and drafting the answer..."):
+        evidence = retrieve(question, k=DEFAULT_K)
+        result = generate(question, evidence)
 
-    if res["matched_funds"]:
-        names = ", ".join(FUND_NAME_BY_URL.get(u, u) for u in res["matched_funds"])
-        st.caption(f"Detected fund(s): {names}")
+    st.session_state["result"] = result
+
+
+def render_result(result: dict) -> None:
+    st.markdown(f"### {result['query']}")
+
+    policy = result.get("policy", "answer")
+    if policy in ("advice", "returns"):
+        st.info(result["answer"])
+    elif policy == "pii":
+        st.warning(result["answer"])
+    elif result.get("empty"):
+        st.info(result["answer"])
     else:
-        st.caption("No single fund named - ambiguous or no fund mention; evidence may mix funds.")
+        st.success(result["answer"])
 
-    if res["citation_urls"]:
-        links = "  |  ".join(
-            f"[{FUND_NAME_BY_URL.get(u, u)}]({u})" for u in res["citation_urls"]
+    col_cite, col_ts = st.columns([3, 2])
+    if result.get("citation_url"):
+        col_cite.markdown(
+            f"**Source:** [{result['citation_label']}]({result['citation_url']})"
         )
-        st.markdown(f"**Citation URL(s):** {links}")
-
-    st.markdown(f"**Last updated from sources:** `{res['fetched_at_max']}`")
-
-    for rank, chunk in enumerate(res["chunks"], 1):
-        similarity = min(max(1.0 - chunk["distance"], 0.0), 1.0)
-        with st.container(border=True):
-            head, score = st.columns([4, 1])
-            head.markdown(f"**#{rank}** - {chunk['fund_name']}")
-            score.markdown(f"`{chunk['distance']:.4f}` dist")
-            st.markdown(f"[{chunk['url']}]({chunk['url']})")
-            st.caption(f"{chunk['chunk_id']} - fetched {chunk['fetched_at']}")
-            st.progress(similarity, text=f"similarity {similarity:.1%}")
-            with st.expander("View chunk text"):
-                st.text(chunk["text"])
+    else:
+        col_cite.markdown("**Source:** none cited")
+    ts = result.get("last_updated")
+    col_ts.markdown(
+        f"**Last updated from sources:** `{ts}`" if ts else "**Last updated from sources:** —"
+    )
 
 
-st.set_page_config(page_title="HDFC Fund FAQ - Retrieval Explorer", layout="centered")
+st.set_page_config(page_title="HDFC Fund FAQ", layout="centered")
 
 st.markdown(
     """
@@ -88,15 +82,10 @@ st.markdown(
 )
 
 st.markdown('<p class="kicker">GROWW HDFC FAQ PROTOTYPE</p>', unsafe_allow_html=True)
-st.title("Mutual fund facts - retrieval explorer")
+st.title("Mutual fund facts")
 st.markdown(
     '<div class="disclaimer">Facts-only. No investment advice.</div>',
     unsafe_allow_html=True,
-)
-st.caption(
-    "Phase 5: your question is embedded with all-MiniLM-L6-v2 and matched against "
-    "the 137 chunks from the five HDFC Groww pages. Generation (Mistral) is not wired "
-    "yet - below is the evidence a generator would be allowed to use."
 )
 
 st.divider()
@@ -114,10 +103,9 @@ with st.form("ask"):
     query_text = st.text_input(
         "Ask a factual question about the five funds",
         key="ask_box",
-        placeholder="e.g. What is the expense ratio of HDFC Flexi Cap?",
+        placeholder="e.g. What is the lock-in for HDFC ELSS Tax Saver?",
     )
-    k = st.slider("Number of chunks (top-k)", 1, 10, DEFAULT_K)
-    submitted = st.form_submit_button("Search")
+    submitted = st.form_submit_button("Ask")
 
 question = query_text if submitted else picked
 
@@ -128,23 +116,20 @@ if question:
     else:
         st.session_state.last_query = question
         try:
-            with st.spinner("Embedding question and searching ChromaDB..."):
-                from retrieval.retriever import retrieve
-
-                st.session_state.evidence = retrieve(question, k=k)
+            run_flow(question)
         except RuntimeError as exc:
             st.error(str(exc))
-            st.session_state.evidence = None
+            st.session_state.pop("result", None)
 
 st.divider()
-evidence = st.session_state.get("evidence")
-if evidence is None:
-    st.info("Ask a factual question above to see which chunks would support an answer.")
+result = st.session_state.get("result")
+if result is None:
+    st.info("Ask a factual question above; you'll get a grounded answer with a source link.")
 else:
-    render_evidence(evidence)
+    render_result(result)
 
 if st.button("Clear results"):
-    st.session_state.evidence = None
+    st.session_state.pop("result", None)
     st.session_state.pop("ask_box", None)
     st.session_state.pop("last_query", None)
     st.rerun()
